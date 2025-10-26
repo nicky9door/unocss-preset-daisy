@@ -1,5 +1,5 @@
 import type { ChildNode, Declaration, PluginCreator } from 'postcss';
-import type { CSSObjectInput, DynamicRule, Preflight, Preset } from 'unocss';
+import type { CSSObjectInput, DynamicRule, Preflight, Preset, Variant } from 'unocss';
 import Nesting from '@tailwindcss/nesting';
 import daisyui from 'daisyui';
 // import { createPlugin } from '@unocss/postcss/esm';
@@ -131,25 +131,41 @@ export async function presetDaisy(options?: Options): Promise<Preset<Record<stri
     } }); */
     // eslint-disable-next-line ts/no-unsafe-assignment
     { config, handler }: { config: Partial<Preset<Record<string, any>>>, handler: (arg: any) => void } = typeof daisyui === 'function' ? (daisyui as (o: any) => any)(options) : daisyui,
-    preflightPromises: Promise<Preflight[]>[] = [];
+    preflightPromises: Promise<Preflight[]>[] = [],
+    variants: Variant[] = [];
   handler({
     addBase(jsCss: Record<string, any>) {
       preflightPromises.push(Promise.resolve([{
         getCSS: async () => processor.process(parse(jsCss), { from: 'base', to: 'base' }).then((ast) => ast.toString()),
-        layer: 'daisy-base'
+        layer: 'daisy'
       }]));
     },
     addComponents(jsCss: Record<string, any>) {
       preflightPromises.push(
         processor.process(parse(jsCss), { from: 'components', to: 'components' })
-          .then((ast) => getUnoCssElements(ast.root.nodes, cssObjectInputsByClassToken, 'daisy-components'))
+          .then((ast) => getUnoCssElements(ast.root.nodes, cssObjectInputsByClassToken, 'daisyui.component'))
       );
     },
     addUtilities(jsCss: Record<string, any>) {
       preflightPromises.push(
         processor.process(parse(jsCss), { from: 'utilities', to: 'utilities' })
-          .then((ast) => getUnoCssElements(ast.root.nodes, cssObjectInputsByClassToken, 'daisy-utilities'))
+          .then((ast) => getUnoCssElements(ast.root.nodes, cssObjectInputsByClassToken, 'daisyui.utility'))
       );
+    },
+
+    addVariant(name, selector) {
+      variants.push(
+        (matcher) => {
+          if(!matcher.startsWith(`${name}:`)){
+            return matcher;
+          }
+
+          return {
+            matcher: matcher.slice(name.length + 1),
+            selector: s => `${s}${selector}`
+          }
+        }
+      )
     },
     config: (key: `${string}.${keyof Options}`) => options?.[key.split('.')[1]] as Options[keyof Options] | undefined // for daisyui v4
   });
@@ -171,6 +187,7 @@ export async function presetDaisy(options?: Options): Promise<Preset<Record<stri
     ...config,
     name: 'unocss-preset-daisy',
     preflights,
+    variants,
     rules
   };
 }
