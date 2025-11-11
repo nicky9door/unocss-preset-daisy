@@ -23,32 +23,48 @@ interface Options {
 const CSSCLASS = /\.(?<name>[-\w\P{ASCII}]+)/gu,
   NOMERGE = /^file-input(?:-.+)?|.*::-webkit-slider-runnable-track$/;
 
-function* flattenRules(nodes: ChildNode[], parents: string[] = []): Generator<[string[], string, Declaration[]] | string> {
+function* flattenRules(nodes: ChildNode[], parentUnoSymbols: Object = {}): Generator<[string[], string, Declaration[]] | string> {
   for (const node of nodes) {
-    if (node.type === 'comment') {
-      continue;
-    } else if (node.type === 'rule') {
-      const declarations = node.nodes.filter(({ type }) => type === 'decl') as Declaration[];
-      if (declarations.length !== node.nodes.filter(({ type }) => type !== 'comment').length) {
-        throw new Error('unexpected mixed declarations node');
-      }
-      if (declarations.length) {
-        node.nodes = declarations;
-        yield [parents, node.selector, declarations];
-      }
-    } else if (node.type === 'atrule') {
-      if (node.nodes == null || node.nodes.length === 0) {
-        continue;
-      }
+    let unoSymbols = {...parentUnoSymbols}
+    let selector = node.selector;
+
+    if (node.type == 'atrule') {
       if (node.name === 'keyframes') {
-        yield node.toString();
+        return node.toString();
+      } else if (node.name === 'layer') {
+        let layer = unoSymbols[symbols.layer] || '';
+        unoSymbols[symbols.layer] = `${layer}${layer == '' ? '' : '.'}${node.params}`;
       } else {
-        yield* flattenRules(node.nodes, [...parents, `@${node.name}${node.raws.afterName ?? ' '}${node.params ?? ''}`]);
+        selector = `@${node.name}${node.raws.afterName ?? ' '}${node.params ?? ''}`;
       }
-    } else {
-      // eslint-disable-next-line no-console
-      console.warn('skipping', node.type);
     }
+
+    if (selector) {
+      let previousSelector = unoSymbols[symbols.selector] || '';
+      if(previousSelector && selector != previousSelector){
+        let parent = unoSymbols[symbols.parent] || '';
+        unoSymbols[symbols.parent] = `${parent}${parent ? ' $$ ' : ''}${previousSelector}`
+      }
+      unoSymbols[symbols.selector] = selector;
+    }
+
+    const nodesByType = node.nodes.reduce((acc, n) => {
+      let type = n.type;
+      acc[type] = acc[type] || []
+      acc[type].push(n)
+      return acc
+    }, {});
+
+    const declarations = nodesByType['decl'] || [] as Declaration[];
+    if(declarations.length){
+      yield([unoSymbols, declarations])
+    }
+    
+    const atrules = nodesByType['atrule'] || [] as AtRule[];
+    yield* flattenRules(atrules, unoSymbols);
+
+    const rules = nodesByType['rule'] || [] as Rule[];
+    yield* flattenRules(rules, unoSymbols);
   }
 }
 
@@ -63,8 +79,15 @@ function getUnoCssElements(childNodes: ChildNode[], cssObjectInputsByClassToken:
         });
         return;
       }
-      const [parents, selector, declarations] = rawElement,
-        classTokens = new Set(Array.from(selector.matchAll(CSSCLASS), ([, name]) => name));
+      const [unoSymbols, declarations] = rawElement,
+        { [symbols.selector]: selector = '', [symbols.parent]: parent = '' } = unoSymbols;
+
+      let classMatches = Array.from(
+        [...parent.matchAll(CSSCLASS), ...selector.matchAll(CSSCLASS)],
+        ([, name]) => name
+      )
+
+      const classTokens = new Set(classMatches);
 
       if (classTokens.size === 0) {
         throw new Error('why include this rule?');
@@ -78,8 +101,7 @@ function getUnoCssElements(childNodes: ChildNode[], cssObjectInputsByClassToken:
         }
         cssObjectInputs.push({
           ...Object.fromEntries((declarations).map(({ important, prop, value }) => [prop, `${value}${important ? ' !important' : ''}`])),
-          [symbols.layer]: layer,
-          [symbols.parent]: parents.join(' $$ '),
+          ...unoSymbols,
           [symbols.selector]: (currentSelector) =>
             selector === currentSelector
               ? selector
