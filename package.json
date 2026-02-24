@@ -23,8 +23,8 @@
     "start": "vite demo --host"
   },
   "peerDependencies": {
-    "daisyui": "^4.12.14 || ^5.0.0",
-    "unocss": "^66.1.2"
+    "daisyui": "^5.5.19",
+    "unocss": "^66.5.5"
   },
   "dependencies": {
     "@tailwindcss/nesting": "0.0.0-insiders.565cd3e",
