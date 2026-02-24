@@ -1,4 +1,4 @@
-import type { ChildNode, Declaration, PluginCreator } from 'postcss';
+import type { AtRule, ChildNode, Declaration, PluginCreator, Rule } from 'postcss';
 import type { CSSObjectInput, DynamicRule, Preflight, Preset, Variant } from 'unocss';
 import Nesting from '@tailwindcss/nesting';
 import daisyui from 'daisyui';
@@ -23,48 +23,74 @@ interface Options {
 const CSSCLASS = /\.(?<name>[-\w\P{ASCII}]+)/gu,
   NOMERGE = /^file-input(?:-.+)?|.*::-webkit-slider-runnable-track$/;
 
-function* flattenRules(nodes: ChildNode[], parentUnoSymbols: Object = {}): Generator<[string[], string, Declaration[]] | string> {
-  for (const node of nodes) {
-    let unoSymbols = {...parentUnoSymbols}
-    let selector = node.selector;
+type ParentUnoSymbols = Partial<{
+  [symbols.layer]: string
+  [symbols.parent]: string
+  [symbols.selector]: string
+}>;
 
-    if (node.type == 'atrule') {
+class NodesToFlatten {
+  atrules: AtRule[] = [];
+  declarations: Declaration[] = [];
+  rules: Rule[] = [];
+}
+
+function* flattenRules(nodes: ChildNode[], parentUnoSymbols: ParentUnoSymbols = {}): Generator<[ParentUnoSymbols, Declaration[]] | string> {
+  for (const node of nodes) {
+    if (node.type !== 'atrule' && node.type !== 'rule') {
+      if (node.type !== 'comment') {
+        // eslint-disable-next-line no-console
+        console.warn('skipping', node.type);
+      }
+      continue;
+    }
+
+    if (!node.nodes || node.nodes.length === 0) {
+      continue;
+    }
+
+    const unoSymbols = { ...parentUnoSymbols };
+    let selector = ('selector' in node ? node.selector : '');
+
+    if (node.type === 'atrule') {
       if (node.name === 'keyframes') {
-        return node.toString();
+        yield node.toString();
+        continue;
       } else if (node.name === 'layer') {
-        let layer = unoSymbols[symbols.layer] || '';
-        unoSymbols[symbols.layer] = `${layer}${layer == '' ? '' : '.'}${node.params}`;
+        const layer = unoSymbols[symbols.layer] ?? '';
+        unoSymbols[symbols.layer] = `${layer}${layer === '' ? '' : '.'}${node.params}`;
       } else {
         selector = `@${node.name}${node.raws.afterName ?? ' '}${node.params ?? ''}`;
       }
     }
 
     if (selector) {
-      let previousSelector = unoSymbols[symbols.selector] || '';
-      if(previousSelector && selector != previousSelector){
-        let parent = unoSymbols[symbols.parent] || '';
-        unoSymbols[symbols.parent] = `${parent}${parent ? ' $$ ' : ''}${previousSelector}`
+      const previousSelector = unoSymbols[symbols.selector] ?? '';
+      if (previousSelector && selector !== previousSelector) {
+        const parent = unoSymbols[symbols.parent] ?? '';
+        unoSymbols[symbols.parent] = `${parent}${parent ? ' $$ ' : ''}${previousSelector}`;
       }
       unoSymbols[symbols.selector] = selector;
     }
 
-    const nodesByType = node.nodes.reduce((acc, n) => {
-      let type = n.type;
-      acc[type] = acc[type] || []
-      acc[type].push(n)
-      return acc
-    }, {});
+    const nodesToFlatten = new NodesToFlatten();
+    node.nodes.forEach((n: ChildNode) => {
+      const type = n.type;
+      if (type === 'decl') {
+        nodesToFlatten.declarations.push(n);
+      } else if (type === 'atrule') {
+        nodesToFlatten.atrules.push(n);
+      } else if (type === 'rule') {
+        nodesToFlatten.rules.push(n);
+      }
+    });
 
-    const declarations = nodesByType['decl'] || [] as Declaration[];
-    if(declarations.length){
-      yield([unoSymbols, declarations])
+    if (nodesToFlatten.declarations.length) {
+      yield ([unoSymbols, nodesToFlatten.declarations]);
     }
-    
-    const atrules = nodesByType['atrule'] || [] as AtRule[];
-    yield* flattenRules(atrules, unoSymbols);
 
-    const rules = nodesByType['rule'] || [] as Rule[];
-    yield* flattenRules(rules, unoSymbols);
+    yield* flattenRules(nodesToFlatten.atrules, unoSymbols);
+    yield* flattenRules(nodesToFlatten.rules, unoSymbols);
   }
 }
 
@@ -80,14 +106,14 @@ function getUnoCssElements(childNodes: ChildNode[], cssObjectInputsByClassToken:
         return;
       }
       const [unoSymbols, declarations] = rawElement,
-        { [symbols.selector]: selector = '', [symbols.parent]: parent = '' } = unoSymbols;
+        { [symbols.parent]: parent = '', [symbols.selector]: selector = '' } = unoSymbols,
 
-      let classMatches = Array.from(
-        [...parent.matchAll(CSSCLASS), ...selector.matchAll(CSSCLASS)],
-        ([, name]) => name
-      )
+        classMatches = Array.from(
+          [...parent.matchAll(CSSCLASS), ...selector.matchAll(CSSCLASS)],
+          ([, name]) => name
+        ),
 
-      const classTokens = new Set(classMatches);
+        classTokens = new Set(classMatches);
 
       if (classTokens.size === 0) {
         throw new Error('why include this rule?');
@@ -175,19 +201,22 @@ export async function presetDaisy(options?: Options): Promise<Preset<Record<stri
       );
     },
 
-    addVariant(name, selector) {
+    addVariant(name: string, selector: string | string[]) {
       variants.push(
         (matcher) => {
-          if(!matcher.startsWith(`${name}:`)){
+          if (!matcher.startsWith(`${name}:`)) {
             return matcher;
           }
 
           return {
             matcher: matcher.slice(name.length + 1),
-            selector: s => `${s}${selector}`
-          }
+            selector: (s) => {
+              const variantSelector = Array.isArray(selector) ? selector.join('') : selector;
+              return `${s}${variantSelector}`;
+            }
+          };
         }
-      )
+      );
     },
     config: (key: `${string}.${keyof Options}`) => options?.[key.split('.')[1]] as Options[keyof Options] | undefined // for daisyui v4
   });
@@ -209,7 +238,7 @@ export async function presetDaisy(options?: Options): Promise<Preset<Record<stri
     ...config,
     name: 'unocss-preset-daisy',
     preflights,
-    variants,
-    rules
+    rules,
+    variants
   };
 }
